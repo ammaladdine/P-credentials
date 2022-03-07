@@ -1,0 +1,84 @@
+pipeline {
+	agent any
+	environment {
+		AWS_ACCOUNT_ID="093471887101"
+		AWS_DEFAULT_REGION="us-east-1"
+		GIT_COMMIT_REV=''
+		envr=''
+		REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+	}
+	parameters {
+		string(name: 'Branch', defaultValue: 'Deployment_TwinnTransact', description: 'Enter the branch to deploy?')
+		choice(name: 'Service', choices: ['account-service', 'beneficiary-service', 'config-servers', 'connector-service', 'core-apis', 'customer-360-service', 'customer-service', 'enquiry-service', 'eureka-server', 'gateway-service', 'gs-service', 'id-generator-service', 'lead-service', 'loan-service', 'money-service', 'persist-service', 'product-service', 'smart-apis', 'template-service'], description: 'Select the service you want to deploy')
+		choice(name: 'environment', choices: ['citizen'], description: 'Select the environment you want to deploy')
+	}
+
+	stages {
+		stage('Logging into AWS ECR') {
+			steps {
+				script {
+					sh "aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+				}
+			}
+		}
+
+		stage('Cloning our Repo') {
+			steps { 
+				# With the credentials clone the repo of the service and cd into the service
+			}
+		}
+
+		stage('Configure') {
+			steps {
+				script {    
+					COMMIT_REV = sh(returnStdout: true, script: "git log -n 1 --pretty=format:'%h'").trim()
+				}
+			}
+        }
+		
+		stage ('Maven Build') {
+			steps {
+				sh """
+					mvn clean install -DskipTests
+				"""
+			}
+		}
+  
+		// Building Docker images
+		stage('Building image') {
+			steps{
+				script {
+					dockerImage = docker.build "${Service}:${COMMIT_REV}"
+				}
+			}
+		}
+
+		// Uploading Docker images into AWS ECR
+		stage('Pushing to ECR') {
+			steps{
+				script {
+					sh "docker tag ${Service}:$COMMIT_REV ${REPOSITORY_URI}/${Service}:$COMMIT_REV"
+					sh "docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${Service}:$COMMIT_REV"
+					sh "docker rmi ${Service}:$COMMIT_REV ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${Service}:$COMMIT_REV"
+				}
+			}
+		}
+		stage('Cloning our helm chart for the service') {
+			steps { 
+				git credentialsId: 'Github-Key', url: 'https://github.com/Maveric-Digital/devops-config.git'
+			}
+		}
+		stage('Deploy the helm chart for the service ') {
+			steps{
+				script {
+					sh "helm upgrade --install ${Service} helm/${Service} -n ${environment} -f helm/${Service}/${environment}.yaml --set imageTag=${COMMIT_REV}"
+				}
+			}
+		}		
+	}
+	post {
+		always { 
+			cleanWs()
+		}
+	}
+}
